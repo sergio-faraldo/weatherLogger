@@ -1,0 +1,15 @@
+[Unit]
+Description=Weather logger
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=weatherlogger
+WorkingDirectory=/opt/weatherlogger
+ExecStart=/usr/local/bin/uv run --project /opt/weatherlogger python /opt/weatherlogger/main.py --mode record-loop --no-ui
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
