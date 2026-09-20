@@ -117,11 +117,14 @@
     }
 
     #chart {
+      width: 100%;
+      box-sizing: border-box;
       min-height: 440px;
       padding: 1rem;
       background: white;
       border: 1px solid #d8e0e8;
       border-radius: 0.5rem;
+      overflow-x: auto;
     }
 
     #status {
@@ -152,8 +155,8 @@
   <div class="view-controls">
     <label for="chart-type">Display:</label>
     <select id="chart-type">
-      <option value="frequency">Frequency by 1 km/h interval</option>
-      <option value="histogram">Histogram of recorded speeds</option>
+      <option value="frequency">Frequency bar chart by 1 km/h interval</option>
+      <option value="histogram">Wind speed over time</option>
     </select>
   </div>
   <p id="status" role="status"></p>
@@ -175,7 +178,7 @@
         throw new Error('The CSV does not contain any data rows.');
       }
 
-      const headers = lines[0].split(',').map(header => header.trim());
+      const headers = lines[0].replace(/^\uFEFF/, '').split(',').map(header => header.trim());
       const windSpeedIndex = headers.indexOf('wind_speed_kmh');
       if (windSpeedIndex === -1) {
         throw new Error('The CSV must contain a wind_speed_kmh column.');
@@ -206,7 +209,8 @@
           bin_start: start,
           bin_end: start + 1,
           bin_label: `[${start}, ${start + 1})`,
-          frequency: count
+          frequency: count,
+          baseline: 0
         }));
     }
 
@@ -245,12 +249,15 @@
       if (chartTypeElement.value === 'histogram') {
         return {
           $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-          width: 'container', height: 400, data: { values },
-          mark: { type: 'bar', tooltip: true, cornerRadiusTopLeft: 3, cornerRadiusTopRight: 3 },
+          width: 800, height: 400, data: { values },
+          mark: { type: 'point', filled: true, size: 70, tooltip: true },
           encoding: {
-            x: { field: 'value', type: 'quantitative', bin: { step: 1 }, title: 'Wind speed (km/h)' },
-            y: { aggregate: 'count', type: 'quantitative', title: 'Number of readings' },
-            tooltip: [{ aggregate: 'count', type: 'quantitative', title: 'Readings' }]
+            x: { field: 'timestamp', type: 'temporal', title: 'Date and time' },
+            y: { field: 'value', type: 'quantitative', title: 'Wind speed (km/h)' },
+            tooltip: [
+              { field: 'timestamp', type: 'temporal', title: 'Date and time' },
+              { field: 'value', type: 'quantitative', title: 'Wind speed (km/h)' }
+            ]
           }
         };
       }
@@ -258,21 +265,27 @@
       const bins = makeBins(values.map(reading => reading.value));
       return {
         $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-        width: 'container', height: 400, data: { values: bins },
-        mark: { type: 'bar', tooltip: true, cornerRadiusTopLeft: 3, cornerRadiusTopRight: 3 },
+        width: 800, height: 400, data: { values: bins },
+        mark: { type: 'rect', tooltip: true },
         encoding: {
           x: { field: 'bin_start', type: 'quantitative', title: 'Wind speed (km/h), interval start', axis: { tickMinStep: 1, format: 'd' } },
           x2: { field: 'bin_end' },
-          y: { field: 'frequency', type: 'quantitative', title: 'Number of readings', scale: { nice: true } },
+          y: { field: 'frequency', type: 'quantitative', title: 'Number of readings', scale: { nice: true, zero: true } },
+          y2: { field: 'baseline', type: 'quantitative' },
           tooltip: [{ field: 'bin_label', type: 'nominal', title: 'Wind-speed interval' }, { field: 'frequency', type: 'quantitative', title: 'Readings' }]
         }
       };
     }
 
     function renderChart() {
+      if (typeof vegaEmbed !== 'function') {
+        statusElement.textContent = 'The chart library could not be loaded. Check your internet connection and reload the page.';
+        return;
+      }
+
       const filteredReadings = selectedDate ? readings.filter(reading => reading.date === selectedDate) : readings;
       const dateDescription = selectedDate ? ` on ${selectedDate}` : '';
-      const displayName = chartTypeElement.value === 'histogram' ? 'histogram' : 'frequency chart';
+      const displayName = chartTypeElement.value === 'histogram' ? 'wind-speed time chart' : 'frequency bar chart';
       statusElement.textContent = `${filteredReadings.length} valid wind-speed reading${filteredReadings.length === 1 ? '' : 's'}${dateDescription} in the ${displayName}.`;
 
       vegaEmbed(chartElement, makeChartSpec(filteredReadings), { actions: false }).catch(error => {
@@ -283,7 +296,7 @@
     function loadReadings(parsedReadings) {
       readings = parsedReadings;
       const dates = [...new Set(readings.map(reading => reading.date))].sort();
-      selectedDate = dates.at(-1) || null;
+      selectedDate = dates.length ? dates[dates.length - 1] : null;
       if (selectedDate) {
         const [year, month] = selectedDate.split('-').map(Number);
         displayedMonth = new Date(year, month - 1, 1);
