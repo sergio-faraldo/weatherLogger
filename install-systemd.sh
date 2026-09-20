@@ -18,6 +18,12 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! command -v setfacl >/dev/null 2>&1; then
+    printf '%s\n' 'setfacl is required so the service user can access the project path.' >&2
+    printf '%s\n' 'Install the acl package first (for example: sudo apt install acl).' >&2
+    exit 1
+fi
+
 uv_path="$(command -v uv)"
 if [[ "$uv_path" != "/usr/local/bin/uv" ]]; then
     install --mode 0755 "$uv_path" /usr/local/bin/uv
@@ -32,6 +38,13 @@ if getent group video >/dev/null 2>&1; then
 fi
 
 install --directory --owner "$service_user" --group "$service_user" "$project_directory"
+# The project may be below a user's private home directory.  Grant only the
+# execute (traverse) permission needed on each parent, not read access.
+parent_directory="$(dirname -- "$project_directory")"
+while [[ "$parent_directory" != "/" ]]; do
+    setfacl --modify "u:${service_user}:--x" "$parent_directory"
+    parent_directory="$(dirname -- "$parent_directory")"
+done
 /usr/local/bin/uv sync --locked --project "$project_directory"
 chown --recursive "$service_user:$service_user" "$project_directory/.venv"
 
