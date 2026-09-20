@@ -33,6 +33,84 @@
       margin-bottom: 1rem;
     }
 
+    .calendar-panel {
+      max-width: 360px;
+      padding: 1rem;
+      background: white;
+      border: 1px solid #d8e0e8;
+      border-radius: 0.5rem;
+    }
+
+    .calendar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+
+    .calendar-header button,
+    .calendar-day,
+    #all-dates {
+      border: 1px solid #d8e0e8;
+      border-radius: 0.35rem;
+      background: white;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    .calendar-header button {
+      width: 2rem;
+      height: 2rem;
+      font-size: 1.1rem;
+    }
+
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+      text-align: center;
+    }
+
+    .calendar-weekday {
+      color: #536577;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .calendar-day {
+      min-height: 2rem;
+    }
+
+    .calendar-day.has-data {
+      background: #d9f0e2;
+      border-color: #72b78b;
+      font-weight: 700;
+    }
+
+    .calendar-day.selected {
+      outline: 2px solid #2563eb;
+      outline-offset: 1px;
+    }
+
+    .calendar-day.empty {
+      visibility: hidden;
+    }
+
+    .view-controls {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      margin: 1rem 0;
+    }
+
+    .view-controls label {
+      font-weight: 600;
+    }
+
+    #all-dates {
+      padding: 0.4rem 0.7rem;
+    }
+
     .hint {
       color: #536577;
       font-size: 0.95rem;
@@ -61,12 +139,35 @@
     </label>
     <span class="hint">Values are grouped into [0, 1), [1, 2), … km/h intervals.</span>
   </div>
+  <section class="calendar-panel" aria-label="Reading dates">
+    <div class="calendar-header">
+      <button id="previous-month" type="button" aria-label="Previous month">‹</button>
+      <strong id="calendar-title"></strong>
+      <button id="next-month" type="button" aria-label="Next month">›</button>
+    </div>
+    <div id="calendar" class="calendar-grid"></div>
+    <button id="all-dates" type="button">Show all dates</button>
+    <p class="hint">Green days contain recorded data.</p>
+  </section>
+  <div class="view-controls">
+    <label for="chart-type">Display:</label>
+    <select id="chart-type">
+      <option value="frequency">Frequency by 1 km/h interval</option>
+      <option value="histogram">Histogram of recorded speeds</option>
+    </select>
+  </div>
   <p id="status" role="status"></p>
   <div id="chart"></div>
 
   <script>
     const statusElement = document.querySelector('#status');
     const chartElement = document.querySelector('#chart');
+    const calendarElement = document.querySelector('#calendar');
+    const calendarTitleElement = document.querySelector('#calendar-title');
+    const chartTypeElement = document.querySelector('#chart-type');
+    let readings = [];
+    let selectedDate = null;
+    let displayedMonth = new Date();
 
     function parseCsv(text) {
       const lines = text.trim().split(/\r?\n/).filter(Boolean);
@@ -80,9 +181,16 @@
         throw new Error('The CSV must contain a wind_speed_kmh column.');
       }
 
-      return lines.slice(1).map(line => line.split(',')[windSpeedIndex])
-        .map(value => Number(value.trim()))
-        .filter(value => Number.isFinite(value) && value >= 0);
+      const timestampIndex = headers.indexOf('timestamp');
+      if (timestampIndex === -1) {
+        throw new Error('The CSV must contain a timestamp column to show dates.');
+      }
+      return lines.slice(1).map(line => {
+        const columns = line.split(',');
+        const value = Number((columns[windSpeedIndex] || '').trim());
+        const timestamp = (columns[timestampIndex] || '').trim();
+        return { value, timestamp, date: timestamp.slice(0, 10) };
+      }).filter(reading => Number.isFinite(reading.value) && reading.value >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(reading.date));
     }
 
     function makeBins(values) {
@@ -102,40 +210,86 @@
         }));
     }
 
-    function render(values, sourceName) {
-      const bins = makeBins(values);
-      statusElement.textContent = `${values.length} valid wind-speed reading${values.length === 1 ? '' : 's'} from ${sourceName}.`;
+    function renderCalendar() {
+      const year = displayedMonth.getFullYear();
+      const month = displayedMonth.getMonth();
+      calendarTitleElement.textContent = displayedMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      calendarElement.innerHTML = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+        .map(day => `<span class="calendar-weekday">${day}</span>`).join('');
 
-      const spec = {
+      const firstDay = new Date(year, month, 1).getDay();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      const datesWithData = new Set(readings.map(reading => reading.date));
+      for (let index = 0; index < firstDay; index += 1) {
+        calendarElement.insertAdjacentHTML('beforeend', '<span class="calendar-day empty"></span>');
+      }
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'calendar-day';
+        button.textContent = String(day);
+        button.setAttribute('aria-label', `${date}${datesWithData.has(date) ? ', has data' : ''}`);
+        if (datesWithData.has(date)) button.classList.add('has-data');
+        if (selectedDate === date) button.classList.add('selected');
+        button.addEventListener('click', () => {
+          selectedDate = date;
+          renderCalendar();
+          renderChart();
+        });
+        calendarElement.appendChild(button);
+      }
+    }
+
+    function makeChartSpec(values) {
+      if (chartTypeElement.value === 'histogram') {
+        return {
+          $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+          width: 'container', height: 400, data: { values },
+          mark: { type: 'bar', tooltip: true, cornerRadiusTopLeft: 3, cornerRadiusTopRight: 3 },
+          encoding: {
+            x: { field: 'value', type: 'quantitative', bin: { step: 1 }, title: 'Wind speed (km/h)' },
+            y: { aggregate: 'count', type: 'quantitative', title: 'Number of readings' },
+            tooltip: [{ aggregate: 'count', type: 'quantitative', title: 'Readings' }]
+          }
+        };
+      }
+
+      const bins = makeBins(values.map(reading => reading.value));
+      return {
         $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-        width: 'container',
-        height: 400,
-        data: { values: bins },
+        width: 'container', height: 400, data: { values: bins },
         mark: { type: 'bar', tooltip: true, cornerRadiusTopLeft: 3, cornerRadiusTopRight: 3 },
         encoding: {
-          x: {
-            field: 'bin_start',
-            type: 'quantitative',
-            title: 'Wind speed (km/h), interval start',
-            axis: { tickMinStep: 1, format: 'd' }
-          },
+          x: { field: 'bin_start', type: 'quantitative', title: 'Wind speed (km/h), interval start', axis: { tickMinStep: 1, format: 'd' } },
           x2: { field: 'bin_end' },
-          y: {
-            field: 'frequency',
-            type: 'quantitative',
-            title: 'Number of readings',
-            scale: { nice: true }
-          },
-          tooltip: [
-            { field: 'bin_label', type: 'nominal', title: 'Wind-speed interval' },
-            { field: 'frequency', type: 'quantitative', title: 'Readings' }
-          ]
+          y: { field: 'frequency', type: 'quantitative', title: 'Number of readings', scale: { nice: true } },
+          tooltip: [{ field: 'bin_label', type: 'nominal', title: 'Wind-speed interval' }, { field: 'frequency', type: 'quantitative', title: 'Readings' }]
         }
       };
+    }
 
-      vegaEmbed(chartElement, spec, { actions: false }).catch(error => {
+    function renderChart() {
+      const filteredReadings = selectedDate ? readings.filter(reading => reading.date === selectedDate) : readings;
+      const dateDescription = selectedDate ? ` on ${selectedDate}` : '';
+      const displayName = chartTypeElement.value === 'histogram' ? 'histogram' : 'frequency chart';
+      statusElement.textContent = `${filteredReadings.length} valid wind-speed reading${filteredReadings.length === 1 ? '' : 's'}${dateDescription} in the ${displayName}.`;
+
+      vegaEmbed(chartElement, makeChartSpec(filteredReadings), { actions: false }).catch(error => {
         statusElement.textContent = `Could not render the chart: ${error.message}`;
       });
+    }
+
+    function loadReadings(parsedReadings) {
+      readings = parsedReadings;
+      const dates = [...new Set(readings.map(reading => reading.date))].sort();
+      selectedDate = dates.at(-1) || null;
+      if (selectedDate) {
+        const [year, month] = selectedDate.split('-').map(Number);
+        displayedMonth = new Date(year, month - 1, 1);
+      }
+      renderCalendar();
+      renderChart();
     }
 
     document.querySelector('#csv-file').addEventListener('change', event => {
@@ -145,7 +299,8 @@
       const reader = new FileReader();
       reader.onload = () => {
         try {
-          render(parseCsv(reader.result), file.name);
+          loadReadings(parseCsv(reader.result));
+          statusElement.textContent += ` Source: ${file.name}.`;
         } catch (error) {
           statusElement.textContent = error.message;
         }
@@ -165,11 +320,26 @@
           throw new Error(`Could not load readings.csv (HTTP ${response.status}).`);
         }
 
-        render(parseCsv(await response.text()), 'readings.csv');
+        loadReadings(parseCsv(await response.text()));
       } catch (error) {
         statusElement.textContent = `${error.message} You can load a CSV manually above.`;
       }
     }
+
+    document.querySelector('#previous-month').addEventListener('click', () => {
+      displayedMonth = new Date(displayedMonth.getFullYear(), displayedMonth.getMonth() - 1, 1);
+      renderCalendar();
+    });
+    document.querySelector('#next-month').addEventListener('click', () => {
+      displayedMonth = new Date(displayedMonth.getFullYear(), displayedMonth.getMonth() + 1, 1);
+      renderCalendar();
+    });
+    document.querySelector('#all-dates').addEventListener('click', () => {
+      selectedDate = null;
+      renderCalendar();
+      renderChart();
+    });
+    chartTypeElement.addEventListener('change', renderChart);
 
     loadRepositoryCsv();
   </script>
