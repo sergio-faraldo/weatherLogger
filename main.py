@@ -9,6 +9,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from time import sleep
 from typing import Any, Iterable
 
 import cv2
@@ -167,6 +168,7 @@ def collect_recording(
             print(f"Could not write USB copy to {usb_output}: {error}", flush=True)
     if mode == "record-loop":
         collected_readings.clear()
+        sleep(30) # wait 30 seconds until next reading
         return False
     return True
 
