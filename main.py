@@ -168,7 +168,6 @@ def collect_recording(
             print(f"Could not write USB copy to {usb_output}: {error}", flush=True)
     if mode == "record-loop":
         collected_readings.clear()
-        sleep(30) # wait 30 seconds until next reading
         return False
     return True
 
@@ -356,6 +355,7 @@ def main() -> None:
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
+            sleep(30) # wait 30 seconds until next reading
     finally:
         camera.release()
         cv2.destroyAllWindows()
