@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wind Speed Frequency</title>
+  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      margin: 0 auto;
+      max-width: 1100px;
+      padding: 2rem;
+      color: #243447;
+      background: #f7f9fb;
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .hint {
+      color: #536577;
+      font-size: 0.95rem;
+    }
+
+    #chart {
+      min-height: 440px;
+      padding: 1rem;
+      background: white;
+      border: 1px solid #d8e0e8;
+      border-radius: 0.5rem;
+    }
+
+    #status {
+      margin: 0.75rem 0;
+      color: #536577;
+    }
+  </style>
+</head>
+<body>
+  <h1>Wind Speed Frequency</h1>
+  <div class="controls">
+    <label>
+      Load another CSV:
+      <input id="csv-file" type="file" accept=".csv,text/csv">
+    </label>
+    <span class="hint">Values are grouped into [0, 1), [1, 2), … km/h intervals.</span>
+  </div>
+  <p id="status" role="status"></p>
+  <div id="chart"></div>
+
+  <script>
+    const statusElement = document.querySelector('#status');
+    const chartElement = document.querySelector('#chart');
+
+    function parseCsv(text) {
+      const lines = text.trim().split(/\r?\n/).filter(Boolean);
+      if (lines.length < 2) {
+        throw new Error('The CSV does not contain any data rows.');
+      }
+
+      const headers = lines[0].split(',').map(header => header.trim());
+      const windSpeedIndex = headers.indexOf('wind_speed_kmh');
+      if (windSpeedIndex === -1) {
+        throw new Error('The CSV must contain a wind_speed_kmh column.');
+      }
+
+      return lines.slice(1).map(line => line.split(',')[windSpeedIndex])
+        .map(value => Number(value.trim()))
+        .filter(value => Number.isFinite(value) && value >= 0);
+    }
+
+    function makeBins(values) {
+      const counts = new Map();
+      values.forEach(value => {
+        const start = Math.floor(value);
+        counts.set(start, (counts.get(start) || 0) + 1);
+      });
+
+      return [...counts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([start, count]) => ({
+          bin_start: start,
+          bin_end: start + 1,
+          bin_label: `[${start}, ${start + 1})`,
+          frequency: count
+        }));
+    }
+
+    function render(values, sourceName) {
+      const bins = makeBins(values);
+      statusElement.textContent = `${values.length} valid wind-speed reading${values.length === 1 ? '' : 's'} from ${sourceName}.`;
+
+      const spec = {
+        $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+        width: 'container',
+        height: 400,
+        data: { values: bins },
+        mark: { type: 'bar', tooltip: true, cornerRadiusTopLeft: 3, cornerRadiusTopRight: 3 },
+        encoding: {
+          x: {
+            field: 'bin_start',
+            type: 'quantitative',
+            title: 'Wind speed (km/h), interval start',
+            axis: { tickMinStep: 1, format: 'd' }
+          },
+          x2: { field: 'bin_end' },
+          y: {
+            field: 'frequency',
+            type: 'quantitative',
+            title: 'Number of readings',
+            scale: { nice: true }
+          },
+          tooltip: [
+            { field: 'bin_label', type: 'nominal', title: 'Wind-speed interval' },
+            { field: 'frequency', type: 'quantitative', title: 'Readings' }
+          ]
+        }
+      };
+
+      vegaEmbed(chartElement, spec, { actions: false }).catch(error => {
+        statusElement.textContent = `Could not render the chart: ${error.message}`;
+      });
+    }
+
+    document.querySelector('#csv-file').addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          render(parseCsv(reader.result), file.name);
+        } catch (error) {
+          statusElement.textContent = error.message;
+        }
+      };
+      reader.onerror = () => {
+        statusElement.textContent = `Could not read ${file.name}.`;
+      };
+      reader.readAsText(file);
+    });
+
+    async function loadRepositoryCsv() {
+      statusElement.textContent = 'Loading readings.csv…';
+
+      try {
+        const response = await fetch('readings.csv', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`Could not load readings.csv (HTTP ${response.status}).`);
+        }
+
+        render(parseCsv(await response.text()), 'readings.csv');
+      } catch (error) {
+        statusElement.textContent = `${error.message} You can load a CSV manually above.`;
+      }
+    }
+
+    loadRepositoryCsv();
+  </script>
+</body>
+</html>
