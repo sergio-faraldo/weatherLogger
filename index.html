@@ -49,8 +49,7 @@
     }
 
     .calendar-header button,
-    .calendar-day,
-    #all-dates {
+    .calendar-day {
       border: 1px solid #d8e0e8;
       border-radius: 0.35rem;
       background: white;
@@ -107,10 +106,6 @@
       font-weight: 600;
     }
 
-    #all-dates {
-      padding: 0.4rem 0.7rem;
-    }
-
     .hint {
       color: #536577;
       font-size: 0.95rem;
@@ -149,7 +144,6 @@
       <button id="next-month" type="button" aria-label="Next month">›</button>
     </div>
     <div id="calendar" class="calendar-grid"></div>
-    <button id="all-dates" type="button">Show all dates</button>
     <p class="hint">Green days contain recorded data.</p>
   </section>
   <div class="view-controls">
@@ -324,19 +318,43 @@
       reader.readAsText(file);
     });
 
-    async function loadRepositoryCsv() {
-      statusElement.textContent = 'Loading readings.csv…';
-
-      try {
-        const response = await fetch('readings.csv', { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error(`Could not load readings.csv (HTTP ${response.status}).`);
-        }
-
-        loadReadings(parseCsv(await response.text()));
-      } catch (error) {
-        statusElement.textContent = `${error.message} You can load a CSV manually above.`;
+    async function loadRepositoryFile(path, compressed = false) {
+      const response = await fetch(path, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`Could not load ${path} (HTTP ${response.status}).`);
       }
+
+      if (!compressed) return parseCsv(await response.text());
+      if (typeof DecompressionStream !== 'function' || !response.body) {
+        throw new Error(`This browser cannot decompress ${path}.`);
+      }
+
+      const decompressed = response.body.pipeThrough(new DecompressionStream('gzip'));
+      return parseCsv(await new Response(decompressed).text());
+    }
+
+    async function loadRepositoryCsv() {
+      statusElement.textContent = 'Loading current and archived readings…';
+
+      const sources = [
+        ['readings.csv', false],
+        ['older-data/readings-2026-09-20.gz', true]
+      ];
+      const results = await Promise.allSettled(sources.map(([path, compressed]) => loadRepositoryFile(path, compressed)));
+      const successfulReadings = results
+        .filter(result => result.status === 'fulfilled')
+        .flatMap(result => result.value);
+      const failures = results
+        .filter(result => result.status === 'rejected')
+        .map(result => result.reason.message);
+
+      if (!successfulReadings.length) {
+        statusElement.textContent = `${failures.join(' ')} You can load a CSV manually above.`;
+        return;
+      }
+
+      loadReadings(successfulReadings);
+      if (failures.length) statusElement.textContent += ` ${failures.join(' ')}`;
     }
 
     document.querySelector('#previous-month').addEventListener('click', () => {
@@ -346,11 +364,6 @@
     document.querySelector('#next-month').addEventListener('click', () => {
       displayedMonth = new Date(displayedMonth.getFullYear(), displayedMonth.getMonth() + 1, 1);
       renderCalendar();
-    });
-    document.querySelector('#all-dates').addEventListener('click', () => {
-      selectedDate = null;
-      renderCalendar();
-      renderChart();
     });
     chartTypeElement.addEventListener('change', renderChart);
 

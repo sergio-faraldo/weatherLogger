@@ -8,3 +8,11 @@ For the direction of the wind, the compass dispaly is interpreted in a similar m
 
 
 This software is running on a raspberry pi, and readings are uploaded to this repo periodically. An HTML, served through github pages shows the wind speed data (the only thing I really care about right now). The HTML itself is very much a WIP.
+
+For a cron-based recorder, add this entry with `crontab -e`:
+
+```cron
+* * * * * /path/to/weatherLogger/run-record.sh >> /path/to/weatherLogger/weatherlogger.log 2>&1
+```
+
+`run-record.sh` uses `flock` to prevent overlapping camera processes and kills a recording that runs longer than 50 seconds. It requires `flock`, GNU `timeout`, and `uv` to be available in cron's `PATH`.
