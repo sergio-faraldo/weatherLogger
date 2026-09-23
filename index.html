@@ -333,12 +333,28 @@
       return parseCsv(await new Response(decompressed).text());
     }
 
+    async function loadArchiveManifest() {
+      const response = await fetch('older-data/list.txt', { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`Could not load older-data/list.txt (HTTP ${response.status}).`);
+      }
+      return (await response.text()).split(/\r?\n/).map(name => name.trim()).filter(Boolean);
+    }
+
     async function loadRepositoryCsv() {
       statusElement.textContent = 'Loading current and archived readings…';
 
+      let archiveNames = [];
+      let manifestFailure = null;
+      try {
+        archiveNames = await loadArchiveManifest();
+      } catch (error) {
+        manifestFailure = error.message;
+      }
+
       const sources = [
         ['readings.csv', false],
-        ['older-data/readings-2026-09-20.gz', true]
+        ...archiveNames.map(name => [`older-data/${name}`, true])
       ];
       const results = await Promise.allSettled(sources.map(([path, compressed]) => loadRepositoryFile(path, compressed)));
       const successfulReadings = results
@@ -347,6 +363,7 @@
       const failures = results
         .filter(result => result.status === 'rejected')
         .map(result => result.reason.message);
+      if (manifestFailure) failures.unshift(manifestFailure);
 
       if (!successfulReadings.length) {
         statusElement.textContent = `${failures.join(' ')} You can load a CSV manually above.`;

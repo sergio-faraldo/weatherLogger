@@ -41,6 +41,9 @@ MEASUREMENT_COLUMNS = (
     ("S6", "pressure_kpa", "pressure_kpa"),
 )
 
+CAMERA_OPEN_ATTEMPTS = 5
+CAMERA_RETRY_DELAY_SECONDS = 2
+
 
 def read_average_frame(camera: cv2.VideoCapture, frame_count: int) -> np.ndarray:
     """Read and average a batch of frames from a stationary camera."""
@@ -57,6 +60,24 @@ def read_average_frame(camera: cv2.VideoCapture, frame_count: int) -> np.ndarray
     return np.rint(accumulated / frame_count).astype(np.uint8)
 
 
+def open_camera(camera_index: int) -> cv2.VideoCapture:
+    """Open a camera, retrying briefly while a USB camera becomes available."""
+    for attempt in range(1, CAMERA_OPEN_ATTEMPTS + 1):
+        camera = cv2.VideoCapture(camera_index)
+        if camera.isOpened():
+            return camera
+        camera.release()
+        if attempt < CAMERA_OPEN_ATTEMPTS:
+            print(
+                f"Could not open camera {camera_index}; retrying in "
+                f"{CAMERA_RETRY_DELAY_SECONDS} seconds ({attempt}/{CAMERA_OPEN_ATTEMPTS})",
+                flush=True,
+            )
+            sleep(CAMERA_RETRY_DELAY_SECONDS)
+
+    raise RuntimeError(f"Could not open camera {camera_index} after {CAMERA_OPEN_ATTEMPTS} attempts")
+
+
 def most_common_measurements(readings: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Choose the most common value independently for every weather variable."""
     readings = list(readings)
@@ -71,18 +92,23 @@ def most_common_measurements(readings: Iterable[dict[str, Any]]) -> dict[str, An
 
 def rotate_readings_file(path: Path, timestamp: datetime | None = None) -> None:
     """Gzip a readings file when it was created on the previous calendar day."""
-    if not path.exists():
-        return
+    archive_directory = path.parent / "older-data"
+    if path.exists():
+        now = timestamp or datetime.now()
+        created = datetime.fromtimestamp(path.stat().st_ctime)
+        if created.date() != now.date() and (now.date() - created.date()).days == 1:
+            archive_directory.mkdir(parents=True, exist_ok=True)
+            archive_path = archive_directory / f"readings-{created:%Y-%m-%d}.gz"
+            with path.open("rb") as source, gzip.open(archive_path, "wb") as archive:
+                archive.write(source.read())
+            path.unlink()
 
-    now = timestamp or datetime.now()
-    created = datetime.fromtimestamp(path.stat().st_ctime)
-    if created.date() != now.date() and (now.date() - created.date()).days == 1:
-        archive_directory = path.parent / "older-data"
-        archive_directory.mkdir(parents=True, exist_ok=True)
-        archive_path = archive_directory / f"readings-{created:%Y-%m-%d}.gz"
-        with path.open("rb") as source, gzip.open(archive_path, "wb") as archive:
-            archive.write(source.read())
-        path.unlink()
+    archive_directory.mkdir(parents=True, exist_ok=True)
+    archive_files = sorted(file.name for file in archive_directory.glob("*.gz"))
+    (archive_directory / "list.txt").write_text(
+        "\n".join(archive_files) + "\n" if archive_files else "",
+        encoding="utf-8",
+    )
 
 
 def append_csv_reading(
@@ -146,7 +172,6 @@ def find_first_usb_mount() -> Path | None:
 def collect_recording(
     readings: dict[str, Any],
     collected_readings: list[dict[str, Any]],
-    mode: str,
     output: Path,
     usb_output: Path | None = None,
 ) -> bool:
@@ -166,10 +191,6 @@ def collect_recording(
             append_csv_reading(usb_output, measurements, timestamp)
         except OSError as error:
             print(f"Could not write USB copy to {usb_output}: {error}", flush=True)
-    if mode == "record-loop":
-        collected_readings.clear()
-        sleep(30) # wait 30 seconds until next reading
-        return False
     return True
 
 
@@ -238,9 +259,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=("live", "record", "record-loop"),
+        choices=("live", "record"),
         default="record",
-        help="display live readings, record 11 readings once, or continuously record batches of 11 readings (default: live)",
+        help="display live readings or record 11 readings once (default: record)",
     )
     parser.add_argument(
         "--output",
@@ -289,21 +310,25 @@ def main() -> None:
     if len(template_keypoints) < args.min_inliers:
         raise RuntimeError(f"Template does not contain enough features: {args.template}")
 
-    camera = cv2.VideoCapture(args.camera)
-    if not camera.isOpened():
-        raise RuntimeError(f"Could not open camera {args.camera}")
+    camera = open_camera(args.camera)
 
     last_printed: tuple[str, ...] | None = None
     collected_readings: list[dict[str, Any]] = []
     try:
         while True:
-            corrected = enhance_image(
-                undistort_image(read_average_frame(camera, args.frames), camera_matrix, distortion),
-                args.contrast,
-                args.sharpen,
-                args.denoise,
-                args.gate,
-            )
+            try:
+                corrected = enhance_image(
+                    undistort_image(read_average_frame(camera, args.frames), camera_matrix, distortion),
+                    args.contrast,
+                    args.sharpen,
+                    args.denoise,
+                    args.gate,
+                )
+            except RuntimeError as error:
+                print(f"{error}; reopening camera", flush=True)
+                camera.release()
+                camera = open_camera(args.camera)
+                continue
             result = process_image(
                 corrected,
                 template,
@@ -323,12 +348,11 @@ def main() -> None:
                 rectified_preview = annotate_top_sectors(result.rectified, grid)
                 sectors = extract_top_sectors(result.rectified, grid)
                 readings = recognize_sectors(sectors, masks)
-                if args.mode in ("record", "record-loop"):
+                if args.mode == "record":
                     batch_complete = len(collected_readings) == 10
                     should_stop = collect_recording(
                         readings,
                         collected_readings,
-                        args.mode,
                         args.output,
                         usb_output,
                     )

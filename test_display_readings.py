@@ -6,7 +6,7 @@ import gzip
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 import cv2
@@ -20,7 +20,9 @@ from main import (
     collect_recording,
     find_first_usb_mount,
     most_common_measurements,
+    open_camera,
     read_average_frame,
+    rotate_readings_file,
 )
 
 
@@ -78,7 +80,29 @@ class DisplayReadingsTest(unittest.TestCase):
             self.assertTrue(archive.exists())
             with gzip.open(archive, "rt", encoding="utf-8") as file:
                 self.assertEqual(file.read(), "old,data\n")
+            self.assertEqual((archive.parent / "list.txt").read_text(encoding="utf-8"), "readings-2026-09-05.gz\n")
             self.assertIn("2026-09-06T07:04:00,12.3", path.read_text(encoding="utf-8"))
+
+    def test_rotating_regenerates_archive_manifest(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "readings.csv"
+            archive_directory = path.parent / "older-data"
+            archive_directory.mkdir()
+            for name in ("readings-2026-09-04.gz", "readings-2026-09-05.gz"):
+                gzip.open(archive_directory / name, "wb").close()
+            path.write_text("old,data\n", encoding="utf-8")
+            created = datetime(2026, 9, 6, 23, 59).timestamp()
+
+            with patch(
+                "main.Path.stat",
+                return_value=SimpleNamespace(st_ctime=created, st_size=path.stat().st_size),
+            ):
+                rotate_readings_file(path, datetime(2026, 9, 7, 7, 4))
+
+            self.assertEqual(
+                (archive_directory / "list.txt").read_text(encoding="utf-8"),
+                "readings-2026-09-04.gz\nreadings-2026-09-05.gz\nreadings-2026-09-06.gz\n",
+            )
 
     def test_reads_and_averages_requested_frames(self) -> None:
         frames = [np.full((2, 2, 3), value, dtype=np.uint8) for value in (10, 20, 30)]
@@ -96,19 +120,20 @@ class DisplayReadingsTest(unittest.TestCase):
 
         np.testing.assert_array_equal(averaged, np.full((2, 2, 3), 20, dtype=np.uint8))
 
-    def test_record_loop_writes_each_completed_batch(self) -> None:
+    def test_recording_writes_completed_batch(self) -> None:
         reading = {"S1": {"measurement": {"temperature_c": 12.3}}}
 
         with TemporaryDirectory() as directory:
             path = Path(directory) / "readings.csv"
             collected: list[dict[str, object]] = []
 
-            for _ in range(22):
-                should_stop = collect_recording(reading, collected, "record-loop", path)
-                self.assertFalse(should_stop)
+            for _ in range(10):
+                self.assertFalse(collect_recording(reading, collected, path))
+            should_stop = collect_recording(reading, collected, path)
 
-            self.assertEqual(len(collected), 0)
-            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 3)
+            self.assertTrue(should_stop)
+            self.assertEqual(len(collected), 11)
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 2)
 
     def test_recording_writes_to_usb_copy(self) -> None:
         reading = {"S1": {"measurement": {"temperature_c": 12.3}}}
@@ -120,11 +145,19 @@ class DisplayReadingsTest(unittest.TestCase):
             collected: list[dict[str, object]] = []
 
             for _ in range(11):
-                should_stop = collect_recording(reading, collected, "record", output, usb_output)
+                should_stop = collect_recording(reading, collected, output, usb_output)
 
             self.assertTrue(should_stop)
 
             self.assertEqual(output.read_text(encoding="utf-8"), usb_output.read_text(encoding="utf-8"))
+
+    def test_open_camera_retries_after_startup_failure(self) -> None:
+        failed_camera = SimpleNamespace(isOpened=lambda: False, release=MagicMock())
+        working_camera = SimpleNamespace(isOpened=lambda: True, release=lambda: None)
+
+        with patch("main.cv2.VideoCapture", side_effect=[failed_camera, working_camera]), patch("main.sleep"):
+            self.assertIs(open_camera(0), working_camera)
+        failed_camera.release.assert_called_once_with()
 
     def test_finds_first_mounted_usb_partition(self) -> None:
         lsblk_output = {
