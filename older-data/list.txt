@@ -18,3 +18,4 @@ readings-2026-10-06.gz
 readings-2026-10-07.gz
 readings-2026-10-08.gz
 readings-2026-10-09.gz
+readings-2026-10-10.gz
