@@ -24,3 +24,4 @@ readings-2026-10-12.gz
 readings-2026-10-13.gz
 readings-2026-10-14.gz
 readings-2026-10-15.gz
+readings-2026-10-16.gz
