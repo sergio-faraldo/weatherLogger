@@ -46,3 +46,4 @@ readings-2026-11-03.gz
 readings-2026-11-04.gz
 readings-2026-11-05.gz
 readings-2026-11-06.gz
+readings-2026-11-07.gz
