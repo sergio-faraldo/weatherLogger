@@ -63,3 +63,4 @@ readings-2026-11-20.gz
 readings-2026-11-21.gz
 readings-2026-11-22.gz
 readings-2026-11-23.gz
+readings-2026-11-24.gz
